@@ -1,6 +1,7 @@
 package com.limelight;
 
-
+import android.Manifest;
+import com.limelight.ui.CameraBackground;
 import com.limelight.binding.PlatformBinding;
 import com.limelight.binding.audio.AndroidAudioRenderer;
 import com.limelight.binding.input.ControllerHandler;
@@ -31,6 +32,7 @@ import com.limelight.preferences.GlPreferences;
 import com.limelight.preferences.PreferenceConfiguration;
 import com.limelight.ui.GameGestures;
 import com.limelight.ui.StreamView;
+import com.limelight.ui.StereoStreamView;
 import com.limelight.utils.Dialog;
 import com.limelight.utils.ServerHelper;
 import com.limelight.utils.ShortcutHelper;
@@ -137,6 +139,10 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     private boolean waitingForAllModifiersUp = false;
     private int specialKeyCode = KeyEvent.KEYCODE_UNKNOWN;
     private StreamView streamView;
+
+    private StereoStreamView stereoView;
+    private CameraBackground cameraBackground;
+    private Surface cameraSurface;
     private long lastAbsTouchUpTime = 0;
     private long lastAbsTouchDownTime = 0;
     private float lastAbsTouchUpX, lastAbsTouchUpY;
@@ -237,6 +243,9 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
         // Listen for non-touch events on the game surface
         streamView = findViewById(R.id.surfaceView);
+        stereoView = findViewById(R.id.stereoView);
+        stereoView.setZOrderMediaOverlay(true);
+        stereoView.setVideoSize(prefConfig.width, prefConfig.height);
         streamView.setOnGenericMotionListener(this);
         streamView.setOnKeyListener(this);
         streamView.setInputCallbacks(this);
@@ -533,8 +542,42 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
         // The connection will be started when the surface gets created
         streamView.getHolder().addCallback(this);
-    }
+        cameraBackground = new CameraBackground(this);
+        // If the camera image appears upside down, change this true/false logic
+        stereoView.setCameraFlip(getWindowManager().getDefaultDisplay().getRotation() == Surface.ROTATION_270);
 
+        stereoView.setListener(new StereoStreamView.Listener() {
+            @Override
+            public void onVideoSurfaceReady(Surface surface) {
+                startStream(surface);
+            }
+
+            @Override
+            public void onCameraSurfaceReady(Surface surface) {
+                cameraSurface = surface;
+                if (Build.VERSION.SDK_INT >= 23 && checkSelfPermission(Manifest.permission.CAMERA)
+                        != PackageManager.PERMISSION_GRANTED) {
+                    requestPermissions(new String[]{Manifest.permission.CAMERA}, 1234);
+                } else {
+                    cameraBackground.start(surface);
+                }
+            }
+        });
+        //stereoView.setListener(new StereoStreamView.Listener() {
+        //    @Override
+        //    public void onVideoSurfaceReady(Surface surface) {
+        //        startStream(surface);
+        //    }
+        //});
+    }
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == 1234 && grantResults.length > 0
+                && grantResults[0] == PackageManager.PERMISSION_GRANTED && cameraSurface != null) {
+            cameraBackground.start(cameraSurface);
+        }
+    }
     private void setPreferredOrientationForCurrentDisplay() {
         Display display = getWindowManager().getDefaultDisplay();
 
@@ -1059,9 +1102,18 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         // Destroy the capture provider
         inputCaptureProvider.destroy();
     }
-
+    @Override
+    protected void onResume() {
+        super.onResume();
+        if (stereoView != null) {
+            stereoView.onResume();
+        }
+    }
     @Override
     protected void onPause() {
+        if (stereoView != null) {
+            stereoView.onPause();
+        }
         if (isFinishing()) {
             // Stop any further input device notifications before we lose focus (and pointer capture)
             if (controllerHandler != null) {
@@ -1078,6 +1130,9 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     @Override
     protected void onStop() {
         super.onStop();
+        if (cameraBackground != null) {
+            cameraBackground.close();
+        }
 
         SpinnerDialog.closeDialogs(this);
         Dialog.closeDialogs();
@@ -2507,18 +2562,38 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         if (!surfaceCreated) {
             throw new IllegalStateException("Surface changed before creation!");
         }
+    }
 
-        if (!attemptedConnection) {
-            attemptedConnection = true;
+    private void startStream(Surface surface) {
+        if (attemptedConnection) {
+            return;
+        }
+        attemptedConnection = true;
+
+        // Update GameManager state to indicate we're "loading" while connecting
+        UiHelper.notifyStreamConnecting(Game.this);
+
+        decoderRenderer.setRenderSurface(surface);
+        conn.start(new AndroidAudioRenderer(Game.this, prefConfig.enableAudioFx),
+                decoderRenderer, Game.this);
+    }
+    //@Override
+    //public void surfaceChanged(SurfaceHolder holder, int format, int width, int height) {
+    //    if (!surfaceCreated) {
+    //        throw new IllegalStateException("Surface changed before creation!");
+    //    }
+
+    //    if (!attemptedConnection) {
+    //        attemptedConnection = true;
 
             // Update GameManager state to indicate we're "loading" while connecting
-            UiHelper.notifyStreamConnecting(Game.this);
+    //        UiHelper.notifyStreamConnecting(Game.this);
 
-            decoderRenderer.setRenderTarget(holder);
-            conn.start(new AndroidAudioRenderer(Game.this, prefConfig.enableAudioFx),
-                    decoderRenderer, Game.this);
-        }
-    }
+    //        decoderRenderer.setRenderTarget(holder);
+    //        conn.start(new AndroidAudioRenderer(Game.this, prefConfig.enableAudioFx),
+    //                decoderRenderer, Game.this);
+    //    }
+    //}
 
     @Override
     public void surfaceCreated(SurfaceHolder holder) {
